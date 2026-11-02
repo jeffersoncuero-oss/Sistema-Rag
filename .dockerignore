@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+venv/
+__pycache__/
+*.pyc
+data/
+.streamlit/secrets.toml
+Dockerfile
+docker-compose-local.yml
+README.md

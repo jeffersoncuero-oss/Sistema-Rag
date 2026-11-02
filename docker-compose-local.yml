@@ -1,0 +1,164 @@
+name: sistema-rag-local
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sistema-rag:local
+    container_name: sistema-rag-app
+    env_file:
+      - .env
+    environment:
+      # Servicios internos de la red Docker
+      OLLAMA_BASE_URL: http://ollama:11434
+      OPENAI_BASE_URL: http://ollama:11434/v1
+      OPENAI_API_KEY: ollama
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      RAG_API_URL: http://backend:8001
+      # Rutas dentro del contenedor
+      DATA_DIR: /app/data
+      UPLOAD_DIR: /app/data/uploads
+      TEMP_DIR: /app/data/tmp
+      DATABASE_URL: sqlite:////app/data/app.db
+      CHROMA_PERSIST_DIRECTORY: /app/data/chroma
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_SERVER_PORT: 8501
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./data:/app/data
+      - ./app.py:/app/app.py
+      - ./components:/app/components
+      - ./services:/app/services
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    networks:
+      - rag-net
+
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sistema-rag:local
+    container_name: sistema-rag-backend
+    env_file:
+      - .env
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OPENAI_BASE_URL: http://ollama:11434/v1
+      OPENAI_API_KEY: ollama
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      DATA_DIR: /app/data
+      UPLOAD_DIR: /app/data/uploads
+      TEMP_DIR: /app/data/tmp
+      CHROMA_PERSIST_DIRECTORY: /app/data/chroma
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "8002:8001"
+    volumes:
+      - ./data:/app/data
+      - ./api:/app/api
+      - ./services:/app/services
+    depends_on:
+      chroma:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - rag-net
+
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: sistema-rag-chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8000'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - rag-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sistema-rag-ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 24h
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    # Para GPU NVIDIA: descomenta este bloque y usa `docker compose -f docker-compose-local.yml up`
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    networks:
+      - rag-net
+
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: sistema-rag-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        ollama pull ${LLM_MODEL:-llama3.2-vision} &&
+        ollama pull ${EMBEDDING_MODEL:-nomic-embed-text} &&
+        echo "Modelos descargados correctamente."
+    restart: "no"
+    networks:
+      - rag-net
+
+volumes:
+  chroma-data:
+  ollama-models:
+
+networks:
+  rag-net:
+    driver: bridge
